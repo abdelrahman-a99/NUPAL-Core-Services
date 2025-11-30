@@ -1,8 +1,13 @@
 {
   "version": 2,
-  "dgSpecHash": "WWHYPy8eQAQ=",
+  "dgSpecHash": "zTfNtlSRzxI=",
   "success": true,
-  "projectFilePath": "D:\\NU\\Grad 1\\NUPAL\\NUPAL-Core-Services\\NUPAL.Core.Application\\NUPAL.Core.Application.csproj",
-  "expectedPackageFiles": [],
+  "projectFilePath": "d:\\NU\\Grad 1\\NUPAL\\NUPAL-Core-Services\\NUPAL.Core.Application\\NUPAL.Core.Application.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\N..C..C\\.nuget\\packages\\bcrypt.net-next\\4.0.3\\bcrypt.net-next.4.0.3.nupkg.sha512",
+    "C:\\Users\\N..C..C\\.nuget\\packages\\mongodb.bson\\3.5.2\\mongodb.bson.3.5.2.nupkg.sha512",
+    "C:\\Users\\N..C..C\\.nuget\\packages\\system.memory\\4.5.5\\system.memory.4.5.5.nupkg.sha512",
+    "C:\\Users\\N..C..C\\.nuget\\packages\\system.runtime.compilerservices.unsafe\\5.0.0\\system.runtime.compilerservices.unsafe.5.0.0.nupkg.sha512"
+  ],
   "logs": []
 }
