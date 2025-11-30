@@ -1,17 +1,17 @@
 {
   "format": 1,
   "restore": {
-    "D:\\NU\\Grad 1\\NUPAL\\NUPAL-Core-Services\\NUPAL.Core.Domain\\NUPAL.Core.Domain.csproj": {}
+    "d:\\NU\\Grad 1\\NUPAL\\NUPAL-Core-Services\\NUPAL.Core.Domain\\NUPAL.Core.Domain.csproj": {}
   },
   "projects": {
-    "D:\\NU\\Grad 1\\NUPAL\\NUPAL-Core-Services\\NUPAL.Core.Domain\\NUPAL.Core.Domain.csproj": {
+    "d:\\NU\\Grad 1\\NUPAL\\NUPAL-Core-Services\\NUPAL.Core.Domain\\NUPAL.Core.Domain.csproj": {
       "version": "1.0.0",
       "restore": {
-        "projectUniqueName": "D:\\NU\\Grad 1\\NUPAL\\NUPAL-Core-Services\\NUPAL.Core.Domain\\NUPAL.Core.Domain.csproj",
+        "projectUniqueName": "d:\\NU\\Grad 1\\NUPAL\\NUPAL-Core-Services\\NUPAL.Core.Domain\\NUPAL.Core.Domain.csproj",
         "projectName": "NUPAL.Core.Domain",
-        "projectPath": "D:\\NU\\Grad 1\\NUPAL\\NUPAL-Core-Services\\NUPAL.Core.Domain\\NUPAL.Core.Domain.csproj",
+        "projectPath": "d:\\NU\\Grad 1\\NUPAL\\NUPAL-Core-Services\\NUPAL.Core.Domain\\NUPAL.Core.Domain.csproj",
         "packagesPath": "C:\\Users\\N..C..C\\.nuget\\packages\\",
-        "outputPath": "D:\\NU\\Grad 1\\NUPAL\\NUPAL-Core-Services\\NUPAL.Core.Domain\\obj\\",
+        "outputPath": "d:\\NU\\Grad 1\\NUPAL\\NUPAL-Core-Services\\NUPAL.Core.Domain\\obj\\",
         "projectStyle": "PackageReference",
         "configFilePaths": [
           "C:\\Users\\N..C..C\\AppData\\Roaming\\NuGet\\NuGet.Config"
@@ -43,6 +43,12 @@
       "frameworks": {
         "net9.0": {
           "targetAlias": "net9.0",
+          "dependencies": {
+            "MongoDB.Bson": {
+              "target": "Package",
+              "version": "[3.5.2, )"
+            }
+          },
           "imports": [
             "net461",
             "net462",
