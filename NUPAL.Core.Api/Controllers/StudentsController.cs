@@ -1,6 +1,12 @@
 using Microsoft.AspNetCore.Mvc;
 using NUPAL.Core.Application.Interfaces;    
 using Nupal.Domain.Entities;
+using System.Security.Claims;
+using System.Text;
+using Microsoft.IdentityModel.Tokens;
+using System.IdentityModel.Tokens.Jwt;
+using Microsoft.AspNetCore.Authorization;
+using System.Net.Mail;
 
 namespace NUPAL.Core.API.Controllers    
 {
@@ -9,10 +15,12 @@ namespace NUPAL.Core.API.Controllers
     public class StudentsController : ControllerBase
     {
         private readonly IStudentService _service;
+        private readonly IConfiguration _config;
 
-        public StudentsController(IStudentService service)
+        public StudentsController(IStudentService service, IConfiguration config)
         {
             _service = service;
+            _config = config;
         }
 
         public class ImportRequest
@@ -116,17 +124,53 @@ namespace NUPAL.Core.API.Controllers
         {
             try
             {
-                if (body == null || string.IsNullOrWhiteSpace(body.email) || string.IsNullOrWhiteSpace(body.password))
+                if (body == null)
                     return BadRequest(new { error = "missing_fields" });
 
-                var s = await _service.FindByEmailAsync(body.email.ToLower());
-                if (s == null) return Unauthorized(new { error = "invalid_credentials" });
+                var email = body.email?.Trim().ToLower();
+                var password = body.password ?? string.Empty;
 
-                var ok = await _service.VerifyPasswordAsync(s, body.password);
-                if (!ok) return Unauthorized(new { error = "invalid_credentials" });
+                if (string.IsNullOrWhiteSpace(email) || string.IsNullOrWhiteSpace(password))
+                    return BadRequest(new { error = "missing_fields" });
+
+                // Basic email format validation
+                bool validEmail;
+                try { var addr = new MailAddress(email); validEmail = addr.Address == email; } catch { validEmail = false; }
+                if (!validEmail)
+                    return BadRequest(new { error = "invalid_email" });
+
+                // Basic password policy (min length)
+                if (password.Length < 6)
+                    return BadRequest(new { error = "invalid_password_format" });
+
+                var s = await _service.FindByEmailAsync(email);
+                if (s == null) return Unauthorized(new { error = "incorrect_email_or_password" });
+
+                var ok = await _service.VerifyPasswordAsync(s, password);
+                if (!ok) return Unauthorized(new { error = "incorrect_email_or_password" });
 
                 if (s.Account != null) s.Account.PasswordHash = null;
-                return Ok(new { ok = true, student = s });
+
+                var tokenHandler = new JwtSecurityTokenHandler();
+                var keyValue = _config["Jwt:Key"] ?? throw new InvalidOperationException("Missing Jwt:Key configuration");
+                var key = Encoding.UTF8.GetBytes(keyValue);
+                var tokenDescriptor = new SecurityTokenDescriptor
+                {
+                    Subject = new ClaimsIdentity(new[]
+                    {
+                        new Claim(ClaimTypes.NameIdentifier, s.Account.Id),
+                        new Claim(ClaimTypes.Email, s.Account.Email),
+                        new Claim(ClaimTypes.Name, s.Account.Name)
+                    }),
+                    Expires = DateTime.UtcNow.AddDays(7),
+                    Issuer = _config["Jwt:Issuer"] ?? throw new InvalidOperationException("Missing Jwt:Issuer configuration"),
+                    Audience = _config["Jwt:Audience"] ?? throw new InvalidOperationException("Missing Jwt:Audience configuration"),
+                    SigningCredentials = new SigningCredentials(new SymmetricSecurityKey(key), SecurityAlgorithms.HmacSha256Signature)
+                };
+                var token = tokenHandler.CreateToken(tokenDescriptor);
+                var tokenString = tokenHandler.WriteToken(token);
+
+                return Ok(new { ok = true, token = tokenString, student = s });
             }
             catch (Exception ex)
             {
@@ -134,6 +178,7 @@ namespace NUPAL.Core.API.Controllers
             }
         }
 
+        [Authorize]
         [HttpGet("by-email/{email}")]
         public async Task<IActionResult> GetByEmail([FromRoute] string email)
         {

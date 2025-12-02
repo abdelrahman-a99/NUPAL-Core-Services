@@ -29,7 +29,10 @@ namespace Nupal.Core.Infrastructure.Repositories
 
         public async Task UpsertAsync(Student s)
         {
-            var filter = Builders<Student>.Filter.Eq(x => x.Account.Id, s.Account.Id);
+            var filter = Builders<Student>.Filter.Or(
+                Builders<Student>.Filter.Eq(x => x.Account.Id, s.Account.Id),
+                Builders<Student>.Filter.Eq(x => x.Account.Email, s.Account.Email)
+            );
             var update = Builders<Student>.Update
                 .Set(x => x.Account.Email, s.Account.Email)
                 .Set(x => x.Account.Name, s.Account.Name)
