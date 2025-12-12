@@ -1,102 +1,32 @@
 using Microsoft.AspNetCore.Mvc;
-using NUPAL.Core.Application.Interfaces;    
-using Nupal.Domain.Entities;
+using NUPAL.Core.Application.DTOs;
+using NUPAL.Core.Application.Interfaces;
+using System.Net.Mail;
 
-namespace NUPAL.Core.API.Controllers    
+namespace NUPAL.Core.API.Controllers
 {
     [ApiController]
     [Route("api/students")]
     public class StudentsController : ControllerBase
     {
         private readonly IStudentService _service;
+        private readonly IConfiguration _config;
 
-        public StudentsController(IStudentService service)
+        public StudentsController(IStudentService service, IConfiguration config)
         {
             _service = service;
-        }
-
-        public class ImportRequest
-        {
-            public AccountJson account { get; set; }
-            public EducationJson education { get; set; }
-        }
-
-        public class AccountJson
-        {
-            public string id { get; set; }
-            public string email { get; set; }
-            public string name { get; set; }
-            public string password { get; set; }
-        }
-
-        public class EducationJson
-        {
-            public double total_credits { get; set; }
-            public int num_semesters { get; set; }
-            public Dictionary<string, SemesterJson> semesters { get; set; }
-        }
-
-        public class SemesterJson
-        {
-            public bool optional { get; set; }
-            public List<CourseJson> courses { get; set; }
-            public double semester_credits { get; set; }
-            public double semester_gpa { get; set; }
-            public double cumulative_gpa { get; set; }
-        }
-
-        public class CourseJson
-        {
-            public string course_id { get; set; }
-            public string course_name { get; set; }
-            public double credit { get; set; }
-            public string grade { get; set; }
-            public double? gpa { get; set; }
+            _config = config;
         }
 
         [HttpPost("import")]
-        public async Task<IActionResult> Import([FromBody] ImportRequest req)
+        public async Task<IActionResult> Import([FromBody] ImportStudentDto req)
         {
             try
             {
-                if (req == null || req.account == null || req.education == null || string.IsNullOrWhiteSpace(req.account.email) || string.IsNullOrWhiteSpace(req.account.password) || string.IsNullOrWhiteSpace(req.account.id))
+                if (req == null || req.Account == null || req.Education == null || string.IsNullOrWhiteSpace(req.Account.Email) || string.IsNullOrWhiteSpace(req.Account.Password) || string.IsNullOrWhiteSpace(req.Account.Id))
                     return BadRequest(new { error = "missing_fields" });
 
-                var semesters = req.education.semesters?.Select(kv => new Semester
-                {
-                    Term = kv.Key,
-                    Optional = kv.Value.optional,
-                    Courses = kv.Value.courses?.Select(c => new Course
-                    {
-                        CourseId = c.course_id,
-                        CourseName = c.course_name,
-                        Credit = c.credit,
-                        Grade = c.grade,
-                        Gpa = c.gpa
-                    }).ToList() ?? new List<Course>(),
-                    SemesterCredits = kv.Value.semester_credits,
-                    SemesterGpa = kv.Value.semester_gpa,
-                    CumulativeGpa = kv.Value.cumulative_gpa
-                }).ToList() ?? new List<Semester>();
-
-                var student = new Student
-                {
-                    Account = new Account
-                    {
-                        Id = req.account.id,
-                        Email = req.account.email.ToLower(),
-                        Name = req.account.name,
-                        PasswordHash = BCrypt.Net.BCrypt.HashPassword(req.account.password, workFactor: 10)
-                    },
-                    Education = new Education
-                    {
-                        TotalCredits = req.education.total_credits,
-                        NumSemesters = req.education.num_semesters,
-                        Semesters = semesters
-                    }
-                };
-
-                await _service.UpsertStudentAsync(student);
+                await _service.UpsertStudentAsync(req);
                 return Ok(new { ok = true });
             }
             catch (Exception ex)
@@ -105,28 +35,39 @@ namespace NUPAL.Core.API.Controllers
             }
         }
 
-        public class LoginBody
-        {
-            public string email { get; set; }
-            public string password { get; set; }
-        }
-
         [HttpPost("login")]
-        public async Task<IActionResult> Login([FromBody] LoginBody body)
+        public async Task<IActionResult> Login([FromBody] LoginDto body)
         {
             try
             {
-                if (body == null || string.IsNullOrWhiteSpace(body.email) || string.IsNullOrWhiteSpace(body.password))
+                if (body == null)
                     return BadRequest(new { error = "missing_fields" });
 
-                var s = await _service.FindByEmailAsync(body.email.ToLower());
-                if (s == null) return Unauthorized(new { error = "invalid_credentials" });
+                var email = body.Email?.Trim().ToLower();
+                var password = body.Password ?? string.Empty;
 
-                var ok = await _service.VerifyPasswordAsync(s, body.password);
-                if (!ok) return Unauthorized(new { error = "invalid_credentials" });
+                if (string.IsNullOrWhiteSpace(email) || string.IsNullOrWhiteSpace(password))
+                    return BadRequest(new { error = "missing_fields" });
 
-                if (s.Account != null) s.Account.PasswordHash = null;
-                return Ok(new { ok = true, student = s });
+                // Basic email format validation
+                bool validEmail;
+                try { var addr = new MailAddress(email); validEmail = addr.Address == email; } catch { validEmail = false; }
+                if (!validEmail)
+                    return BadRequest(new { error = "invalid_email" });
+
+                // Basic password policy (min length)
+                if (password.Length < 6)
+                    return BadRequest(new { error = "invalid_password_format" });
+
+                var jwtKey = _config["Jwt:Key"] ?? throw new InvalidOperationException("Missing Jwt:Key configuration");
+                var jwtIssuer = _config["Jwt:Issuer"] ?? throw new InvalidOperationException("Missing Jwt:Issuer configuration");
+                var jwtAudience = _config["Jwt:Audience"] ?? throw new InvalidOperationException("Missing Jwt:Audience configuration");
+
+                var authResponse = await _service.AuthenticateAsync(new LoginDto { Email = email, Password = password }, jwtKey, jwtIssuer, jwtAudience);
+
+                if (authResponse == null) return Unauthorized(new { error = "incorrect_email_or_password" });
+
+                return Ok(new { ok = true, token = authResponse.Token, student = authResponse.Student });
             }
             catch (Exception ex)
             {
@@ -134,14 +75,14 @@ namespace NUPAL.Core.API.Controllers
             }
         }
 
+        [Microsoft.AspNetCore.Authorization.Authorize]
         [HttpGet("by-email/{email}")]
         public async Task<IActionResult> GetByEmail([FromRoute] string email)
         {
             try
             {
-                var s = await _service.FindByEmailAsync(email.ToLower());
+                var s = await _service.GetStudentByEmailAsync(email);
                 if (s == null) return NotFound(new { error = "not_found" });
-                if (s.Account != null) s.Account.PasswordHash = null;
                 return Ok(s);
             }
             catch (Exception ex)
