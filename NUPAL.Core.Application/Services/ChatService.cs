@@ -88,6 +88,7 @@ namespace NUPAL.Core.Application.Services
                 if (!string.IsNullOrWhiteSpace(student.LatestRecommendationId))
                 {
                     rl = await _rlRepo.GetByIdAsync(student.LatestRecommendationId);
+                    Console.WriteLine($"[ChatService] Found RL via LatestRecommendationId: {student.LatestRecommendationId}");
                 }
                 rl ??= await _rlRepo.GetLatestByStudentIdAsync(studentId);
 
@@ -102,7 +103,16 @@ namespace NUPAL.Core.Application.Services
                         ModelVersion = rl.ModelVersion,
                         PolicyVersion = rl.PolicyVersion
                     };
+                    Console.WriteLine($"[ChatService] Sending RL recommendation to agent: TermIndex={rl.TermIndex}, Courses={rl.Courses?.Count ?? 0}");
                 }
+                else
+                {
+                    Console.WriteLine($"[ChatService] No RL recommendation found for student: {studentId}");
+                }
+            }
+            else
+            {
+                Console.WriteLine($"[ChatService] Student not found: {studentId}");
             }
 
             // 5) Route via agent

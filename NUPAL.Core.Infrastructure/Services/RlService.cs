@@ -14,8 +14,9 @@ namespace Nupal.Core.Infrastructure.Services
         public RlService(HttpClient httpClient, IConfiguration config)
         {
             _httpClient = httpClient;
-            // Allow override via config, but default to the provided HF space
-            _baseUrl = config["RyServiceUrl"] ?? "https://abdelrahman-a99-nu-rl-recommender.hf.space";
+            // Allow override via config, but throw if missing (Fail Fast)
+            _baseUrl = config["RlServiceUrl"] 
+                       ?? throw new InvalidOperationException("RL Recommender Service URL is not configured. Please provide 'RlServiceUrl' in appsettings.");
             
             _httpClient.Timeout = TimeSpan.FromMinutes(10); // Long timeout for training
         }
