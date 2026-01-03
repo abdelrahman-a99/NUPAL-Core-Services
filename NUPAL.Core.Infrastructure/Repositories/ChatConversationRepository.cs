@@ -38,6 +38,17 @@ namespace Nupal.Core.Infrastructure.Repositories
             await _col.UpdateOneAsync(x => x.Id == oid, update);
         }
 
+        public async Task UpdateAsync(ChatConversation convo)
+        {
+            await _col.ReplaceOneAsync(x => x.Id == convo.Id, convo);
+        }
+
+        public async Task DeleteAsync(string id)
+        {
+            if (!ObjectId.TryParse(id, out var oid)) return;
+            await _col.DeleteOneAsync(x => x.Id == oid);
+        }
+
         public async Task<List<ChatConversation>> GetLatestByStudentAsync(string studentId, int limit = 20)
         {
             return await _col.Find(x => x.StudentId == studentId)

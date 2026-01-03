@@ -23,6 +23,12 @@ namespace Nupal.Core.Infrastructure.Repositories
             await _col.InsertOneAsync(message);
         }
 
+        public async Task DeleteByConversationIdAsync(string conversationId)
+        {
+            if (string.IsNullOrWhiteSpace(conversationId)) return;
+            await _col.DeleteManyAsync(x => x.ConversationId == conversationId);
+        }
+
         public async Task<List<ChatMessage>> GetRecentByConversationAsync(string conversationId, int limit = 30)
         {
             if (string.IsNullOrWhiteSpace(conversationId)) return new List<ChatMessage>();
