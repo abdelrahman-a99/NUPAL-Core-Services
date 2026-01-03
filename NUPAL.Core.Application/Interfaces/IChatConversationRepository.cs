@@ -7,6 +7,8 @@ namespace NUPAL.Core.Application.Interfaces
         Task<ChatConversation> CreateAsync(ChatConversation convo);
         Task<ChatConversation?> GetByIdAsync(string id);
         Task TouchAsync(string id);
+        Task UpdateAsync(ChatConversation convo);
+        Task DeleteAsync(string id);
         Task<List<ChatConversation>> GetLatestByStudentAsync(string studentId, int limit = 20);
     }
 }
