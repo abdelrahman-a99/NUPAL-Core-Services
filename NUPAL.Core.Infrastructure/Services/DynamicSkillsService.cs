@@ -42,7 +42,7 @@ namespace NUPAL.Core.Infrastructure.Services
                                 {
                                     AddSkill(skillMap, "Data Structures", proficiency);
                                 }
-                                if (courseName.Contains("machine learning") || courseName.Contains("ai"))
+                                if (courseName.Contains("machine learning") || courseName.Contains("ai") || courseName.Contains("machine intelligence"))
                                 {
                                     AddSkill(skillMap, "Machine Learning", proficiency);
                                 }
