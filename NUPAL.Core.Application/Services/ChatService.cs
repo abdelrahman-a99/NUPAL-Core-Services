@@ -146,6 +146,28 @@ namespace NUPAL.Core.Application.Services
             return JsonSerializer.Serialize(metadata, MetadataJsonOptions);
         }
 
+
+        private static string? DetectTargetTrack(string? message)
+        {
+            if (string.IsNullOrWhiteSpace(message)) return null;
+            var text = message.ToLowerInvariant().Replace("-", "_");
+            if (text.Contains("big data") || text.Contains("big_data") || text.Contains("bigdata")) return "big_data";
+            if (text.Contains("media informatics") || text.Contains("media track") || text.Contains(" media ") || text.EndsWith(" media")) return "media";
+            if (text.Contains("general track") || text.Contains(" general ") || text.EndsWith(" general")) return "general";
+            return null;
+        }
+
+        private static string DetectObjectiveProfile(string? message)
+        {
+            if (string.IsNullOrWhiteSpace(message)) return "balanced";
+            var text = message.ToLowerInvariant().Replace("-", "_");
+            if (text.Contains("fastest") || text.Contains("graduate quickly") || text.Contains("quick graduation")) return "fastest_graduation";
+            if (text.Contains("gpa safe") || text.Contains("gpa_safe") || text.Contains("safe gpa") || text.Contains("protect my gpa")) return "gpa_safe";
+            if (text.Contains("programming heavy") || text.Contains("programming_heavy") || text.Contains("more programming")) return "programming_heavy";
+            if (text.Contains("math heavy") || text.Contains("math_heavy") || text.Contains("more math")) return "math_heavy";
+            return "balanced";
+        }
+
         public async Task<ChatSendResponseDto> SendAsync(string studentId, ChatSendRequestDto request, CancellationToken ct = default)
         {
             if (string.IsNullOrWhiteSpace(studentId))
@@ -198,18 +220,34 @@ namespace NUPAL.Core.Application.Services
                 Content = request.Message.Trim()
             });
 
-            // 4) Fetch latest RL recommendation snapshot (if present)
+            // 4) Fetch the best matching stored RL recommendation snapshot (if present).
+            // The agent also detects track/profile, but the backend must choose the stored variant
+            // before calling the agent. If no track is mentioned, default to General for backward compatibility.
             AgentRlRecommendationDto? rlSnap = null;
+            var requestedTargetTrack = DetectTargetTrack(request.Message);
+            var requestedProfile = DetectObjectiveProfile(request.Message);
+            var lookupTargetTrack = requestedTargetTrack ?? "general";
+
             var student = await _studentRepo.GetByIdAsync(studentId);
             if (student != null)
             {
-                RlRecommendation? rl = null;
-                if (!string.IsNullOrWhiteSpace(student.LatestRecommendationId))
+                RlRecommendation? rl = await _rlRepo.GetLatestByStudentIdAsync(studentId, lookupTargetTrack, requestedProfile);
+
+                if (rl == null && requestedProfile != "balanced")
+                {
+                    rl = await _rlRepo.GetLatestByStudentIdAsync(studentId, lookupTargetTrack, "balanced");
+                }
+
+                // Legacy fallback only when the user did not explicitly ask for a track.
+                if (rl == null && requestedTargetTrack == null && !string.IsNullOrWhiteSpace(student.LatestRecommendationId))
                 {
                     rl = await _rlRepo.GetByIdAsync(student.LatestRecommendationId);
-                    Console.WriteLine($"[ChatService] Found RL via LatestRecommendationId: {student.LatestRecommendationId}");
+                    Console.WriteLine($"[ChatService] Found legacy RL via LatestRecommendationId: {student.LatestRecommendationId}");
                 }
-                rl ??= await _rlRepo.GetLatestByStudentIdAsync(studentId);
+
+                rl ??= requestedTargetTrack == null
+                    ? await _rlRepo.GetLatestByStudentIdAsync(studentId)
+                    : null;
 
                 if (rl != null)
                 {
@@ -217,16 +255,29 @@ namespace NUPAL.Core.Application.Services
                     {
                         TermIndex = rl.TermIndex,
                         Courses = rl.Courses ?? new List<string>(),
+                        TargetTrack = rl.TargetTrack,
+                        ObjectiveProfile = rl.ObjectiveProfile,
                         SlatesByTerm = rl.SlatesByTerm,
                         Metrics = rl.Metrics,
                         ModelVersion = rl.ModelVersion,
                         PolicyVersion = rl.PolicyVersion
                     };
-                    Console.WriteLine($"[ChatService] Sending RL recommendation to agent: TermIndex={rl.TermIndex}, Courses={rl.Courses?.Count ?? 0}");
+                    Console.WriteLine($"[ChatService] Sending RL recommendation to agent: Track={rl.TargetTrack}, Profile={rl.ObjectiveProfile}, TermIndex={rl.TermIndex}, Courses={rl.Courses?.Count ?? 0}");
                 }
                 else
                 {
-                    Console.WriteLine($"[ChatService] No RL recommendation found for student: {studentId}");
+                    // Send an explicit empty snapshot for requested variants so the agent can respond
+                    // gracefully instead of hallucinating a track-specific plan.
+                    if (requestedTargetTrack != null)
+                    {
+                        rlSnap = new AgentRlRecommendationDto
+                        {
+                            TargetTrack = lookupTargetTrack,
+                            ObjectiveProfile = requestedProfile,
+                            Courses = new List<string>()
+                        };
+                    }
+                    Console.WriteLine($"[ChatService] No RL recommendation found for student={studentId}, track={lookupTargetTrack}, profile={requestedProfile}");
                 }
             }
             else
