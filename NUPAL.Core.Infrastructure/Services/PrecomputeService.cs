@@ -1,7 +1,6 @@
 using NUPAL.Core.Application.DTOs;
 using NUPAL.Core.Application.Interfaces;
 using Nupal.Domain.Entities;
-using MongoDB.Bson;
 using System.Text.Json;
 using System.Security.Cryptography;
 using System.Text;
@@ -10,6 +9,10 @@ namespace Nupal.Core.Infrastructure.Services
 {
     public class PrecomputeService : IPrecomputeService
     {
+        private static readonly string[] SupportedTracks = new[] { "general", "big_data", "media" };
+        private const string DefaultObjectiveProfile = "balanced";
+        private const string RecommendationVariantSchemaVersion = "track-aware-v1";
+
         private readonly IStudentRepository _studentRepo;
         private readonly IRlJobRepository _jobRepo;
         private readonly IRlRecommendationRepository _recRepo;
@@ -27,9 +30,9 @@ namespace Nupal.Core.Infrastructure.Services
             _rlService = rlService;
         }
 
-        public async Task<string> TriggerPrecomputeAsync(string studentId, bool isSimulation = false, int? episodes = null)
+        public async Task<string> TriggerPrecomputeAsync(string studentId, bool isSimulation = false, int? episodes = null, string? targetTrack = null)
         {
-            var student = await _studentRepo.GetByIdAsync(studentId) 
+            var student = await _studentRepo.GetByIdAsync(studentId)
                           ?? await _studentRepo.FindByEmailAsync(studentId); // Support ID or Email
 
             if (student == null)
@@ -39,7 +42,7 @@ namespace Nupal.Core.Infrastructure.Services
             var eduJson = JsonSerializer.Serialize(student.Education);
             // Fix: Store the "Clean" hash in the DB so SyncAll can compare apples-to-apples.
             // If we want to track sim/episodes, we should store them as separate columns in RlJob, not bake into the hash.
-            var eduHash = ComputeSha256(eduJson); 
+            var eduHash = ComputeSha256($"{RecommendationVariantSchemaVersion}|{eduJson}");
 
             // Create Job
             var job = new RlJob
@@ -50,11 +53,11 @@ namespace Nupal.Core.Infrastructure.Services
                 EducationHash = eduHash,
                 IsSimulation = isSimulation
             };
-            
+
             await _jobRepo.CreateAsync(job);
 
             // Trigger Background Task
-            _ = Task.Run(async () => await ProcessJobAsync(job.Id.ToString(), student, isSimulation, episodes));
+            _ = Task.Run(async () => await ProcessJobAsync(job.Id.ToString(), student, isSimulation, episodes, targetTrack));
 
             return job.Id.ToString();
         }
@@ -62,7 +65,7 @@ namespace Nupal.Core.Infrastructure.Services
         public async Task<object> GetJobStatusAsync()
         {
             var jobs = await _jobRepo.GetActiveJobsAsync();
-            return jobs.Select(j => new 
+            return jobs.Select(j => new
             {
                 JobId = j.Id.ToString(),
                 j.StudentId,
@@ -99,7 +102,7 @@ namespace Nupal.Core.Infrastructure.Services
 
                 var eduJson = JsonSerializer.Serialize(student.Education);
                 // Hash is always "production" (raw) hash to allow comparison
-                var currentHash = ComputeSha256(eduJson); 
+                var currentHash = ComputeSha256($"{RecommendationVariantSchemaVersion}|{eduJson}");
 
                 var latestJob = await _jobRepo.GetLatestByStudentIdAsync(student.Account.Id);
 
@@ -112,7 +115,7 @@ namespace Nupal.Core.Infrastructure.Services
                 else
                 {
                     // 1. Check if hash or mode changed
-                    if (latestJob.EducationHash != currentHash || 
+                    if (latestJob.EducationHash != currentHash ||
                         latestJob.Status == JobStatus.Failed ||
                         latestJob.IsSimulation != isSimulation)
                     {
@@ -134,48 +137,59 @@ namespace Nupal.Core.Infrastructure.Services
                 {
                      // Trigger job with requested mode (simulation or production)
                      // Await the trigger to prevent slamming the RL service and database with concurrent requests
-                     await TriggerPrecomputeAsync(student.Account.Id, isSimulation, episodes: null);
-                     
-                     // Optional: Add a small delay if the RL service is fragile
-                     await Task.Delay(500); 
+                    await TriggerPrecomputeAsync(student.Account.Id, isSimulation, episodes: null);
 
-                     result.TriggeredJobs++;
-                     result.TriggeredStudentIds.Add(student.Account.Id);
+                     // Optional: Add a small delay if the RL service is fragile
+                    await Task.Delay(500);
+
+                    result.TriggeredJobs++;
+                    result.TriggeredStudentIds.Add(student.Account.Id);
                 }
             }
 
             return result;
         }
 
-        private async Task ProcessJobAsync(string jobId, Student student, bool isSimulation, int? episodes)
+        private async Task ProcessJobAsync(string jobId, Student student, bool isSimulation, int? episodes, string? targetTrack)
         {
             try
             {
-                Console.WriteLine($"[DEBUG] Job {jobId}: Starting processing...");
+                Console.WriteLine($"[DEBUG] Job {jobId}: Starting track-aware processing...");
                 await _jobRepo.UpdateStatusAsync(jobId, JobStatus.Running);
 
-                Console.WriteLine($"[DEBUG] Job {jobId}: Mapping request...");
-                var request = MapToRlRequest(student, isSimulation, episodes);
-                
-                Console.WriteLine($"[DEBUG] Job {jobId}: Sending RL Request: {JsonSerializer.Serialize(request)}");
-                var response = await _rlService.GetRecommendationAsync(request);
-                Console.WriteLine($"[DEBUG] Job {jobId}: Received RL Response: {JsonSerializer.Serialize(response)}");
+                var tracksToCompute = ResolveTracks(targetTrack);
+                string? defaultRecommendationId = null;
 
-                Console.WriteLine($"[DEBUG] Job {jobId}: Mapping to Entity...");
-                var recommendation = MapToEntity(response, student.Account.Id);
-                
-                Console.WriteLine($"[DEBUG] Job {jobId}: Saving Recommendation...");
-                await _recRepo.CreateAsync(recommendation);
-                Console.WriteLine($"[DEBUG] Job {jobId}: Saved Recommendation ID: {recommendation.Id}");
+                foreach (var track in tracksToCompute)
+                {
+                    Console.WriteLine($"[DEBUG] Job {jobId}: Computing {DefaultObjectiveProfile}+{track}...");
+                    var request = MapToRlRequest(student, isSimulation, episodes, track, DefaultObjectiveProfile);
 
-                Console.WriteLine($"[DEBUG] Job {jobId}: Updating Job Result...");
-                await _jobRepo.UpdateResultAsync(jobId, recommendation.Id.ToString());
-                
-                Console.WriteLine($"[DEBUG] Job {jobId}: Updating Student...");
-                // Update Student with latest recommendation
-                student.LatestRecommendationId = recommendation.Id.ToString();
+                    Console.WriteLine($"[DEBUG] Job {jobId}: Sending RL Request: {JsonSerializer.Serialize(request)}");
+                    var response = await _rlService.GetRecommendationAsync(request);
+                    Console.WriteLine($"[DEBUG] Job {jobId}: Received RL Response for track={track}");
+
+                    var recommendation = MapToEntity(response, student.Account.Id, track, DefaultObjectiveProfile);
+                    await _recRepo.CreateAsync(recommendation);
+                    Console.WriteLine($"[DEBUG] Job {jobId}: Saved {DefaultObjectiveProfile}+{track} Recommendation ID: {recommendation.Id}");
+
+                    // Keep the legacy pointer useful. Prefer general if all variants were computed.
+                    if (defaultRecommendationId == null || track == "general")
+                    {
+                        defaultRecommendationId = recommendation.Id.ToString();
+                    }
+                }
+
+                if (string.IsNullOrWhiteSpace(defaultRecommendationId))
+                {
+                    throw new InvalidOperationException("No recommendation variants were created.");
+                }
+
+                await _jobRepo.UpdateResultAsync(jobId, defaultRecommendationId);
+
+                student.LatestRecommendationId = defaultRecommendationId;
                 await _studentRepo.UpsertAsync(student);
-                
+
                 Console.WriteLine($"[DEBUG] Job {jobId}: Finished successfully.");
             }
             catch (Exception ex)
@@ -192,10 +206,33 @@ namespace Nupal.Core.Infrastructure.Services
             }
         }
 
-        private RlTrainingRequest MapToRlRequest(Student student, bool isSimulation, int? episodes)
+        private static List<string> ResolveTracks(string? requestedTrack)
+        {
+            if (!string.IsNullOrWhiteSpace(requestedTrack))
+            {
+                return new List<string> { NormalizeTargetTrack(requestedTrack) };
+            }
+
+            // First production strategy: compute balanced once per track, not all profile×track combinations.
+            return SupportedTracks.ToList();
+        }
+
+        private static string NormalizeTargetTrack(string? targetTrack)
+        {
+            var raw = (targetTrack ?? "general").Trim().ToLowerInvariant().Replace("-", "_").Replace(" ", "_");
+            return raw switch
+            {
+                "bigdata" or "big_data" or "big_data_track" => "big_data",
+                "media" or "media_informatics" or "media_track" => "media",
+                "general" or "general_track" => "general",
+                _ => "general"
+            };
+        }
+
+        private RlTrainingRequest MapToRlRequest(Student student, bool isSimulation, int? episodes, string targetTrack, string objectiveProfile)
         {
             var edu = student.Education;
-            
+
             // Simulation Logic: Truncate to N-2 semesters if simulation is requested
             var semesters = edu.Semesters ?? new List<Semester>();
             var totalCredits = edu.TotalCredits;
@@ -237,10 +274,7 @@ namespace Nupal.Core.Infrastructure.Services
                };
             }
 
-            // Determine episode count: 
-            // 1. Explicitly provided (testing)
-            // 2. Simulation -> Default 5
-            // 3. Production -> Default 5000
+            // Preserve current caller behavior: explicit episodes wins; existing default remains light.
             int epCount = episodes ?? 1;
 
             return new RlTrainingRequest
@@ -250,39 +284,79 @@ namespace Nupal.Core.Infrastructure.Services
                 Episodes = epCount,
                 PretrainSteps = epCount,
                 MaxSemesters = 8,
-                Seed = 42
+                Seed = 42,
+                Profile = objectiveProfile,
+                Profiles = new List<string> { objectiveProfile },
+                TargetTrack = targetTrack
             };
         }
 
-        private RlRecommendation MapToEntity(RlTrainingResponse response, string studentId)
+        private RlRecommendation MapToEntity(RlTrainingResponse response, string studentId, string targetTrack, string objectiveProfile)
         {
+            var finalCumGpa = response.Metadata?.FinalCumGpa
+                              ?? response.Metadata?.BestEpisode?.CumGpa
+                              ?? 0;
+            var finalTotalCredits = response.Metadata?.FinalTotalCredits
+                                    ?? response.Metadata?.BestEpisode?.TotalCredits
+                                    ?? response.Metadata?.TotalCredits
+                                    ?? 0;
+            var graduated = (response.Metadata?.Status == "already_finished")
+                            || (response.Metadata?.Graduated ?? false)
+                            || (response.Metadata?.BestEpisode?.Graduated ?? false);
+
             return new RlRecommendation
             {
                 StudentId = studentId,
                 CreatedAt = DateTime.UtcNow,
-                Courses = (response.RecommendedSlates != null && response.RecommendedSlates.Any()) 
-                          ? response.RecommendedSlates.First() 
+                TargetTrack = NormalizeTargetTrack(response.Metadata?.TargetTrack ?? targetTrack),
+                ObjectiveProfile = (response.Metadata?.Profile ?? response.DefaultProfile ?? objectiveProfile ?? DefaultObjectiveProfile).Trim().ToLowerInvariant(),
+                Courses = (response.RecommendedSlates != null && response.RecommendedSlates.Any())
+                          ? response.RecommendedSlates.First()
                           : new List<string>(),
                 TermIndex = response.Terms?.FirstOrDefault()?.Term ?? 0,
-                SlatesByTerm = response.Terms?.Select(t => new TermRecommendation 
-                { 
-                    Term = t.Term, 
-                    Slate = t.Slate 
+                SlatesByTerm = response.Terms?.Select(t => new TermRecommendation
+                {
+                    Term = t.Term,
+                    Slate = t.Slate
                 }).ToList(),
                 Metrics = new RecommendationMetrics
                 {
-                    CumGpa = response.Metadata?.BestEpisode?.CumGpa ?? 0,
-                    TotalCredits = response.Metadata?.BestEpisode?.TotalCredits ?? response.Metadata?.TotalCredits ?? 0, // Fallback to metadata total if episode missing
-                    Graduated = (response.Metadata?.Status == "already_finished") || (response.Metadata?.BestEpisode?.Graduated ?? false),
-                    GradFlags = response.Metadata?.TopFailedFlags is JsonElement je && je.ValueKind == JsonValueKind.Array
-                        ? je.EnumerateArray()
-                            .Where(x => x.ValueKind == JsonValueKind.Array && x.GetArrayLength() == 2)
-                            .ToDictionary(
-                                x => x[0].ToString(), 
-                                x => (object)x[1].GetInt32())
-                        : new Dictionary<string, object>()
+                    CumGpa = finalCumGpa,
+                    TotalCredits = finalTotalCredits,
+                    Graduated = graduated,
+                    GradFlags = ConvertGradFlags(response.Metadata?.GradFlags)
                 }
             };
+        }
+
+        private static Dictionary<string, object> ConvertGradFlags(JsonElement? gradFlags)
+        {
+            if (!gradFlags.HasValue || gradFlags.Value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+            {
+                return new Dictionary<string, object>();
+            }
+
+            var element = gradFlags.Value;
+            if (element.ValueKind == JsonValueKind.Object)
+            {
+                var result = new Dictionary<string, object>();
+                foreach (var prop in element.EnumerateObject())
+                {
+                    result[prop.Name] = prop.Value.ValueKind switch
+                    {
+                        JsonValueKind.True => true,
+                        JsonValueKind.False => false,
+                        JsonValueKind.Number when prop.Value.TryGetDouble(out var d) => d,
+                        JsonValueKind.String => prop.Value.GetString() ?? string.Empty,
+                        JsonValueKind.Array => prop.Value.ToString(),
+                        JsonValueKind.Object => prop.Value.ToString(),
+                        _ => prop.Value.ToString()
+                    };
+                }
+                return result;
+            }
+
+            return new Dictionary<string, object>();
         }
 
         private static string ComputeSha256(string rawData)

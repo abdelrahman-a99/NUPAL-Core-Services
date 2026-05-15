@@ -61,6 +61,8 @@ namespace NUPAL.Core.API.Controllers
                     coursesCount = rlRecommendation.Courses?.Count ?? 0,
                     courses = rlRecommendation.Courses,
                     slatesCount = rlRecommendation.SlatesByTerm?.Count ?? 0,
+                    targetTrack = rlRecommendation.TargetTrack,
+                    objectiveProfile = rlRecommendation.ObjectiveProfile,
                     modelVersion = rlRecommendation.ModelVersion,
                     policyVersion = rlRecommendation.PolicyVersion,
                     createdAt = rlRecommendation.CreatedAt

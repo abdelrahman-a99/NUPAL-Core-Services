@@ -39,6 +39,12 @@ namespace NUPAL.Core.Application.DTOs
         [JsonPropertyName("courses")]
         public List<string> Courses { get; set; } = new();
 
+        [JsonPropertyName("target_track")]
+        public string? TargetTrack { get; set; }
+
+        [JsonPropertyName("objective_profile")]
+        public string? ObjectiveProfile { get; set; }
+
         [JsonPropertyName("slates_by_term")]
         public List<TermRecommendation>? SlatesByTerm { get; set; }
 

@@ -13,6 +13,9 @@ namespace Nupal.Domain.Entities
 
         public int TermIndex { get; set; } // The "next term number", e.g. 1 for first semester
 
+        public string TargetTrack { get; set; } = "general";
+        public string ObjectiveProfile { get; set; } = "balanced";
+
         public List<string> Courses { get; set; } = new();
 
         public List<TermRecommendation>? SlatesByTerm { get; set; }
