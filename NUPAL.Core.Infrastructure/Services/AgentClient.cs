@@ -24,7 +24,8 @@ namespace Nupal.Core.Infrastructure.Services
         {
             var options = new JsonSerializerOptions
             {
-                PropertyNamingPolicy = null
+                PropertyNamingPolicy = null,
+                PropertyNameCaseInsensitive = true
             };
 
             try

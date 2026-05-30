@@ -110,7 +110,7 @@ namespace NUPAL.Core.API.Controllers
         }
         [HttpGet("{id}/rl-recommendation")]
         [Microsoft.AspNetCore.Authorization.AllowAnonymous]
-        public async Task<IActionResult> GetLatestRlRecommendation([FromRoute] string id, [FromServices] IRlRecommendationRepository rlRepo, [FromServices] ICourseMappingRepository mappingRepo)
+        public async Task<IActionResult> GetLatestRlRecommendation([FromRoute] string id, [FromServices] IRlRecommendationRepository rlRepo, [FromServices] ICourseMappingRepository mappingRepo, [FromQuery] string? targetTrack = null, [FromQuery] string? objectiveProfile = null)
         {
             try
             {
@@ -124,7 +124,7 @@ namespace NUPAL.Core.API.Controllers
                 var s = await _service.GetStudentByIdAsync(id);
                 if (s == null) return NotFound(new { error = "student_not_found" });
 
-                var rlRecommendation = await rlRepo.GetLatestByStudentIdAsync(id);
+                var rlRecommendation = await rlRepo.GetLatestByStudentIdAsync(id, NormalizeTargetTrack(targetTrack), NormalizeObjectiveProfile(objectiveProfile));
                 if (rlRecommendation == null) return NotFound(new { error = "no_recommendation_found" });
 
                 var mappingsCacheKey = "course-mappings:all";
@@ -172,6 +172,25 @@ namespace NUPAL.Core.API.Controllers
             {
                 return StatusCode(500, new { error = "server_error", message = ex.Message });
             }
+        }
+
+        private static string? NormalizeTargetTrack(string? targetTrack)
+        {
+            if (string.IsNullOrWhiteSpace(targetTrack)) return null;
+            var raw = targetTrack.Trim().ToLowerInvariant().Replace("-", "_").Replace(" ", "_");
+            return raw switch
+            {
+                "bigdata" or "big_data" or "big_data_track" => "big_data",
+                "media" or "media_informatics" or "media_track" => "media",
+                "general" or "general_track" => "general",
+                _ => raw
+            };
+        }
+
+        private static string? NormalizeObjectiveProfile(string? profile)
+        {
+            if (string.IsNullOrWhiteSpace(profile)) return null;
+            return profile.Trim().ToLowerInvariant().Replace("-", "_").Replace(" ", "_");
         }
     }
 }

@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using Nupal.Domain.Entities;
 
@@ -23,6 +24,15 @@ namespace NUPAL.Core.Application.DTOs
 
         [JsonPropertyName("seed")]
         public int Seed { get; set; }
+
+        [JsonPropertyName("profile")]
+        public string? Profile { get; set; }
+
+        [JsonPropertyName("profiles")]
+        public List<string>? Profiles { get; set; }
+
+        [JsonPropertyName("target_track")]
+        public string? TargetTrack { get; set; }
     }
 
     public class RlEducation
@@ -135,6 +145,24 @@ namespace NUPAL.Core.Application.DTOs
     {
         [JsonPropertyName("status")]
         public string? Status { get; set; }
+
+        [JsonPropertyName("profile")]
+        public string? Profile { get; set; }
+
+        [JsonPropertyName("target_track")]
+        public string? TargetTrack { get; set; }
+
+        [JsonPropertyName("final_total_credits")]
+        public double? FinalTotalCredits { get; set; }
+
+        [JsonPropertyName("final_cum_gpa")]
+        public double? FinalCumGpa { get; set; }
+
+        [JsonPropertyName("graduated")]
+        public bool? Graduated { get; set; }
+
+        [JsonPropertyName("grad_flags")]
+        public JsonElement? GradFlags { get; set; }
 
         [JsonPropertyName("total_credits")]
         public double? TotalCredits { get; set; }

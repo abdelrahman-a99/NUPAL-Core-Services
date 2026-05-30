@@ -6,6 +6,6 @@ namespace NUPAL.Core.Application.Interfaces
     {
         Task CreateAsync(RlRecommendation recommendation);
         Task<RlRecommendation?> GetByIdAsync(string id);
-        Task<RlRecommendation?> GetLatestByStudentIdAsync(string studentId);
+        Task<RlRecommendation?> GetLatestByStudentIdAsync(string studentId, string? targetTrack = null, string? objectiveProfile = null);
     }
 }
