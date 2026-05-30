@@ -8,8 +8,11 @@ public class RlRecommendationResponseDto
     public object? Slates { get; set; }
     public object? Metrics { get; set; }
     public DateTime CreatedAt { get; set; }
+    public string? TargetTrack { get; set; }
+    public string? ObjectiveProfile { get; set; }
     public string? DefaultProfile { get; set; }
     public object? Profiles { get; set; }
+    public object? Tracks { get; set; }
 }
 
 public class ResumeAnalysisResponseDto

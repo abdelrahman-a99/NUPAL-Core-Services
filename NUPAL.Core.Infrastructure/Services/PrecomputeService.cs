@@ -10,8 +10,17 @@ namespace Nupal.Core.Infrastructure.Services
     public class PrecomputeService : IPrecomputeService
     {
         private static readonly string[] SupportedTracks = new[] { "general", "big_data", "media" };
+        private static readonly List<string> SupportedObjectiveProfiles = new()
+        {
+            "balanced",
+            "fastest_graduation",
+            "gpa_safe",
+            "math_heavy",
+            "programming_heavy"
+        };
+        private const string DefaultTargetTrack = "general";
         private const string DefaultObjectiveProfile = "balanced";
-        private const string RecommendationVariantSchemaVersion = "track-aware-v1";
+        private const string RecommendationVariantSchemaVersion = "track-aware-bundle-v1";
 
         private readonly IStudentRepository _studentRepo;
         private readonly IRlJobRepository _jobRepo;
@@ -84,7 +93,7 @@ namespace Nupal.Core.Infrastructure.Services
             await _jobRepo.CreateAsync(job);
 
             // Trigger Background Task
-            _ = Task.Run(async () => await ProcessJobAsync(job.Id.ToString(), student, isSimulation, episodes, targetTrack));
+            _ = Task.Run(async () => await ProcessJobAsync(job.Id.ToString(), student, isSimulation, episodes, targetTrack, eduHash));
 
             return job.Id.ToString();
         }
@@ -173,12 +182,9 @@ namespace Nupal.Core.Infrastructure.Services
                 {
                      // Trigger job with requested mode (simulation or production)
                      // Await the trigger to prevent slamming the RL service and database with concurrent requests
-                     await TriggerPrecomputeAsync(student.Account.Id, isSimulation, episodes: null, force: true);
-                     
-                     // Optional: Add a small delay if the RL service is fragile
-                     await Task.Delay(500); 
+                    await TriggerPrecomputeAsync(student.Account.Id, isSimulation, episodes: null, force: true);
 
-                     // Optional: Add a small delay if the RL service is fragile
+                    // Optional: Add a small delay if the RL service is fragile
                     await Task.Delay(500);
 
                     result.TriggeredJobs++;
@@ -189,44 +195,53 @@ namespace Nupal.Core.Infrastructure.Services
             return result;
         }
 
-        private async Task ProcessJobAsync(string jobId, Student student, bool isSimulation, int? episodes, string? targetTrack)
+        private async Task ProcessJobAsync(string jobId, Student student, bool isSimulation, int? episodes, string? targetTrack, string educationHash)
         {
             try
             {
-                Console.WriteLine($"[DEBUG] Job {jobId}: Starting track-aware processing...");
+                Console.WriteLine($"[DEBUG] Job {jobId}: Starting track-aware bundle processing...");
                 await _jobRepo.UpdateStatusAsync(jobId, JobStatus.Running);
 
                 var tracksToCompute = ResolveTracks(targetTrack);
-                string? defaultRecommendationId = null;
+                var responsesByTrack = new Dictionary<string, RlTrainingResponse>();
 
                 foreach (var track in tracksToCompute)
                 {
-                    Console.WriteLine($"[DEBUG] Job {jobId}: Computing {DefaultObjectiveProfile}+{track}...");
-                    var request = MapToRlRequest(student, isSimulation, episodes, track, DefaultObjectiveProfile);
+                    Console.WriteLine($"[DEBUG] Job {jobId}: Computing all profiles for track={track}...");
+                    var request = MapToRlRequest(student, isSimulation, episodes, track);
 
                     Console.WriteLine($"[DEBUG] Job {jobId}: Sending RL Request: {JsonSerializer.Serialize(request)}");
                     var response = await _rlService.GetRecommendationAsync(request);
                     Console.WriteLine($"[DEBUG] Job {jobId}: Received RL Response for track={track}");
 
-                    var recommendation = MapToEntity(response, student.Account.Id, track, DefaultObjectiveProfile);
-                    await _recRepo.CreateAsync(recommendation);
-                    Console.WriteLine($"[DEBUG] Job {jobId}: Saved {DefaultObjectiveProfile}+{track} Recommendation ID: {recommendation.Id}");
-
-                    // Keep the legacy pointer useful. Prefer general if all variants were computed.
-                    if (defaultRecommendationId == null || track == "general")
-                    {
-                        defaultRecommendationId = recommendation.Id.ToString();
-                    }
+                    responsesByTrack[track] = response;
                 }
 
-                if (string.IsNullOrWhiteSpace(defaultRecommendationId))
+                if (!responsesByTrack.Any())
                 {
                     throw new InvalidOperationException("No recommendation variants were created.");
                 }
 
-                await _jobRepo.UpdateResultAsync(jobId, defaultRecommendationId);
+                var defaultTrack = responsesByTrack.ContainsKey(DefaultTargetTrack)
+                    ? DefaultTargetTrack
+                    : responsesByTrack.Keys.First();
 
-                student.LatestRecommendationId = defaultRecommendationId;
+                var recommendation = MapToBundleEntity(
+                    responsesByTrack,
+                    student.Account.Id,
+                    defaultTrack,
+                    DefaultObjectiveProfile,
+                    jobId,
+                    educationHash);
+
+                await _recRepo.CreateAsync(recommendation);
+                Console.WriteLine($"[DEBUG] Job {jobId}: Saved bundled recommendation ID: {recommendation.Id}");
+
+                var recommendationId = recommendation.Id.ToString();
+
+                await _jobRepo.UpdateResultAsync(jobId, recommendationId);
+
+                student.LatestRecommendationId = recommendationId;
                 await _studentRepo.UpsertAsync(student);
 
                 Console.WriteLine($"[DEBUG] Job {jobId}: Finished successfully.");
@@ -258,7 +273,7 @@ namespace Nupal.Core.Infrastructure.Services
 
         private static string NormalizeTargetTrack(string? targetTrack)
         {
-            var raw = (targetTrack ?? "general").Trim().ToLowerInvariant().Replace("-", "_").Replace(" ", "_");
+            var raw = (targetTrack ?? DefaultTargetTrack).Trim().ToLowerInvariant().Replace("-", "_").Replace(" ", "_");
             return raw switch
             {
                 "bigdata" or "big_data" or "big_data_track" => "big_data",
@@ -268,7 +283,7 @@ namespace Nupal.Core.Infrastructure.Services
             };
         }
 
-        private RlTrainingRequest MapToRlRequest(Student student, bool isSimulation, int? episodes, string targetTrack, string objectiveProfile)
+        private RlTrainingRequest MapToRlRequest(Student student, bool isSimulation, int? episodes, string targetTrack)
         {
             var edu = student.Education;
 
@@ -296,21 +311,21 @@ namespace Nupal.Core.Infrastructure.Services
 
             foreach (var sem in semesters)
             {
-               rlEdu.Semesters[sem.Term] = new RlSemester
-               {
-                   CumulativeGpa = sem.CumulativeGpa,
-                   SemesterGpa = sem.SemesterGpa,
-                   SemesterCredits = sem.SemesterCredits,
-                   Optional = sem.Optional,
-                   Courses = sem.Courses.Select(c => new RlCourse
-                   {
-                       CourseId = c.CourseId,
-                       CourseName = c.CourseName,
-                       Credit = c.Credit,
-                       Grade = c.Grade,
-                       Gpa = c.Gpa ?? 0
-                   }).ToList()
-               };
+                rlEdu.Semesters[sem.Term] = new RlSemester
+                {
+                    CumulativeGpa = sem.CumulativeGpa,
+                    SemesterGpa = sem.SemesterGpa,
+                    SemesterCredits = sem.SemesterCredits,
+                    Optional = sem.Optional,
+                    Courses = sem.Courses.Select(c => new RlCourse
+                    {
+                        CourseId = c.CourseId,
+                        CourseName = c.CourseName,
+                        Credit = c.Credit,
+                        Grade = c.Grade,
+                        Gpa = c.Gpa ?? 0
+                    }).ToList()
+                };
             }
 
             // Determine episode count: 
@@ -327,66 +342,67 @@ namespace Nupal.Core.Infrastructure.Services
                 PretrainSteps = epCount,
                 MaxSemesters = 8,
                 Seed = 42,
-                Profile = objectiveProfile,
-                Profiles = new List<string> { objectiveProfile },
+                Profile = DefaultObjectiveProfile,
+                Profiles = SupportedObjectiveProfiles,
                 TargetTrack = targetTrack
             };
         }
 
-        private RlRecommendation MapToEntity(RlTrainingResponse response, string studentId, string targetTrack, string objectiveProfile)
+        private RlRecommendation MapToBundleEntity(
+            Dictionary<string, RlTrainingResponse> responsesByTrack,
+            string studentId,
+            string defaultTrack,
+            string defaultProfile,
+            string jobId,
+            string educationHash)
         {
-            var lastTerm = response.Terms?.OrderBy(t => t.Term).LastOrDefault();
-
-            Dictionary<string, object>? gradFlags = null;
-            if (response.Metadata?.GradFlags != null)
-            {
-                // Convert JsonElement values to plain CLR types so MongoDB can serialize them
-                gradFlags = response.Metadata.GradFlags
-                    .ToDictionary(kvp => kvp.Key, kvp => ConvertToPlainObject(kvp.Value));
-            }
-            else if (response.Metadata?.TopFailedFlags is JsonElement je && je.ValueKind == JsonValueKind.Array)
-            {
-                gradFlags = je.EnumerateArray()
-                    .Where(x => x.ValueKind == JsonValueKind.Array && x.GetArrayLength() == 2)
-                    .ToDictionary(
-                        x => x[0].ToString(), 
-                        x => (object)x[1].GetInt32());
-            }
+            var normalizedDefaultTrack = NormalizeTargetTrack(defaultTrack);
+            var defaultResponse = responsesByTrack[normalizedDefaultTrack];
+            var defaultTrackRecommendation = MapTrack(defaultResponse, normalizedDefaultTrack);
 
             return new RlRecommendation
             {
                 StudentId = studentId,
                 CreatedAt = DateTime.UtcNow,
+                ParentJobId = jobId,
+                EducationHash = educationHash,
+
+                TargetTrack = normalizedDefaultTrack,
+                ObjectiveProfile = defaultProfile,
+                Courses = defaultTrackRecommendation.Courses,
+                TermIndex = defaultTrackRecommendation.SlatesByTerm?.FirstOrDefault()?.Term ?? 0,
+                SlatesByTerm = defaultTrackRecommendation.SlatesByTerm,
+                Metrics = defaultTrackRecommendation.Metrics,
+                DefaultProfile = defaultResponse.DefaultProfile ?? defaultProfile,
+                Profiles = defaultTrackRecommendation.Profiles,
+
+                RawResponsesByTrack = responsesByTrack.ToDictionary(
+                    kvp => NormalizeTargetTrack(kvp.Key),
+                    kvp => kvp.Value.RawJson ?? JsonSerializer.Serialize(kvp.Value)),
+
+                Tracks = responsesByTrack.ToDictionary(
+                    kvp => NormalizeTargetTrack(kvp.Key),
+                    kvp => MapTrack(kvp.Value, NormalizeTargetTrack(kvp.Key)))
+            };
+        }
+
+        private TrackRecommendation MapTrack(RlTrainingResponse response, string targetTrack)
+        {
+            return new TrackRecommendation
+            {
                 TargetTrack = NormalizeTargetTrack(response.Metadata?.TargetTrack ?? targetTrack),
-                ObjectiveProfile = (response.Metadata?.Profile ?? response.DefaultProfile ?? objectiveProfile ?? DefaultObjectiveProfile).Trim().ToLowerInvariant(),
+                DefaultProfile = response.DefaultProfile ?? DefaultObjectiveProfile,
                 Courses = (response.RecommendedSlates != null && response.RecommendedSlates.Any())
                           ? response.RecommendedSlates.First()
                           : new List<string>(),
-                TermIndex = response.Terms?.FirstOrDefault()?.Term ?? 0,
                 SlatesByTerm = response.Terms?.Select(t => new TermRecommendation
                 {
                     Term = t.Term,
                     Slate = t.Slate
                 }).ToList(),
-                Metrics = new RecommendationMetrics
-                {
-                    CumGpa = response.Metadata?.FinalCumGpa 
-                             ?? response.Metadata?.BestEpisode?.CumGpa 
-                             ?? lastTerm?.CumulativeGpaSoFar 
-                             ?? 0,
-                    TotalCredits = response.Metadata?.FinalTotalCredits 
-                                   ?? response.Metadata?.BestEpisode?.TotalCredits 
-                                   ?? response.Metadata?.TotalCredits 
-                                   ?? lastTerm?.TotalCreditsSoFar 
-                                   ?? 0,
-                    Graduated = response.Metadata?.Graduated 
-                                ?? (response.Metadata?.Status == "already_finished" 
-                                    || (response.Metadata?.BestEpisode?.Graduated ?? lastTerm?.GraduatedSoFar ?? false)),
-                    GradFlags = gradFlags ?? new Dictionary<string, object>()
-                },
-                DefaultProfile = response.DefaultProfile ?? "balanced",
+                Metrics = MapMetrics(response.Metadata, response.Terms),
                 Profiles = response.Profiles?.ToDictionary(
-                    kvp => kvp.Key,
+                    kvp => kvp.Key.Trim().ToLowerInvariant().Replace("-", "_").Replace(" ", "_"),
                     kvp => MapProfile(kvp.Value)
                 )
             };
@@ -394,54 +410,57 @@ namespace Nupal.Core.Infrastructure.Services
 
         private ProfileRecommendation MapProfile(ProfileRecommendationDto dto)
         {
-            var lastTerm = dto.Terms?.OrderBy(t => t.Term).LastOrDefault();
+            return new ProfileRecommendation
+            {
+                Courses = (dto.RecommendedSlates != null && dto.RecommendedSlates.Any())
+                          ? dto.RecommendedSlates.First()
+                          : new List<string>(),
+                SlatesByTerm = dto.Terms?.Select(t => new TermRecommendation
+                {
+                    Term = t.Term,
+                    Slate = t.Slate
+                }).ToList(),
+                Metrics = MapMetrics(dto.Metadata, dto.Terms)
+            };
+        }
+
+        private RecommendationMetrics MapMetrics(RlMetadata? metadata, List<RlTermResult>? terms)
+        {
+            var lastTerm = terms?.OrderBy(t => t.Term).LastOrDefault();
 
             Dictionary<string, object>? gradFlags = null;
-            if (dto.Metadata?.GradFlags != null)
+            if (metadata?.GradFlags != null)
             {
-                // Convert JsonElement values to plain CLR types so MongoDB can serialize them
-                gradFlags = dto.Metadata.GradFlags
+                gradFlags = metadata.GradFlags
                     .ToDictionary(kvp => kvp.Key, kvp => ConvertToPlainObject(kvp.Value));
             }
-            else if (dto.Metadata?.TopFailedFlags is JsonElement je && je.ValueKind == JsonValueKind.Array)
+            else if (metadata?.TopFailedFlags is JsonElement je && je.ValueKind == JsonValueKind.Array)
             {
                 gradFlags = je.EnumerateArray()
                     .Where(x => x.ValueKind == JsonValueKind.Array && x.GetArrayLength() == 2)
                     .ToDictionary(
-                        x => x[0].ToString(), 
+                        x => x[0].ToString(),
                         x => (object)x[1].GetInt32());
             }
 
-            return new ProfileRecommendation
+            return new RecommendationMetrics
             {
-                Courses = (dto.RecommendedSlates != null && dto.RecommendedSlates.Any()) 
-                          ? dto.RecommendedSlates.First() 
-                          : new List<string>(),
-                SlatesByTerm = dto.Terms?.Select(t => new TermRecommendation 
-                { 
-                    Term = t.Term, 
-                    Slate = t.Slate 
-                }).ToList(),
-                Metrics = new RecommendationMetrics
-                {
-                    CumGpa = dto.Metadata?.FinalCumGpa 
-                             ?? dto.Metadata?.BestEpisode?.CumGpa 
-                             ?? lastTerm?.CumulativeGpaSoFar 
-                             ?? 0,
-                    TotalCredits = dto.Metadata?.FinalTotalCredits 
-                                   ?? dto.Metadata?.BestEpisode?.TotalCredits 
-                                   ?? dto.Metadata?.TotalCredits 
-                                   ?? lastTerm?.TotalCreditsSoFar 
-                                   ?? 0,
-                    Graduated = dto.Metadata?.Graduated 
-                                ?? (dto.Metadata?.Status == "already_finished" 
-                                    || (dto.Metadata?.BestEpisode?.Graduated ?? lastTerm?.GraduatedSoFar ?? false)),
-                    GradFlags = gradFlags ?? new Dictionary<string, object>()
-                }
+                CumGpa = metadata?.FinalCumGpa
+                         ?? metadata?.BestEpisode?.CumGpa
+                         ?? lastTerm?.CumulativeGpaSoFar
+                         ?? 0,
+                TotalCredits = metadata?.FinalTotalCredits
+                               ?? metadata?.BestEpisode?.TotalCredits
+                               ?? metadata?.TotalCredits
+                               ?? lastTerm?.TotalCreditsSoFar
+                               ?? 0,
+                Graduated = metadata?.Graduated
+                            ?? (metadata?.Status == "already_finished"
+                                || (metadata?.BestEpisode?.Graduated ?? lastTerm?.GraduatedSoFar ?? false)),
+                GradFlags = gradFlags ?? new Dictionary<string, object>()
             };
         }
 
-        /// <summary>Converts JsonElement and nested JsonElement values to plain CLR types for MongoDB compatibility.</summary>
         private static object ConvertToPlainObject(object value)
         {
             if (value is JsonElement je)
@@ -462,6 +481,7 @@ namespace Nupal.Core.Infrastructure.Services
                     _                    => je.GetRawText()
                 };
             }
+
             return value;
         }
 
@@ -471,10 +491,12 @@ namespace Nupal.Core.Infrastructure.Services
             {
                 byte[] bytes = sha256Hash.ComputeHash(Encoding.UTF8.GetBytes(rawData));
                 StringBuilder builder = new StringBuilder();
+
                 for (int i = 0; i < bytes.Length; i++)
                 {
                     builder.Append(bytes[i].ToString("x2"));
                 }
+
                 return builder.ToString();
             }
         }

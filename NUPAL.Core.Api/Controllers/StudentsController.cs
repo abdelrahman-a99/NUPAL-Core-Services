@@ -114,7 +114,10 @@ namespace NUPAL.Core.API.Controllers
         {
             try
             {
-                var cacheKey = $"rl-rec:{id}";
+                var selectedTrack = NormalizeTargetTrack(targetTrack);
+                var selectedProfile = NormalizeObjectiveProfile(objectiveProfile);
+
+                var cacheKey = $"rl-rec:{id}:{selectedTrack}:{selectedProfile}";
                 var cached = await _cache.GetAsync<RlRecommendationResponseDto>(cacheKey);
                 if (cached is not null)
                 {
@@ -124,8 +127,30 @@ namespace NUPAL.Core.API.Controllers
                 var s = await _service.GetStudentByIdAsync(id);
                 if (s == null) return NotFound(new { error = "student_not_found" });
 
-                var rlRecommendation = await rlRepo.GetLatestByStudentIdAsync(id, NormalizeTargetTrack(targetTrack), NormalizeObjectiveProfile(objectiveProfile));
+                var rlRecommendation = await rlRepo.GetLatestByStudentIdAsync(id, "general", "balanced")
+                    ?? await rlRepo.GetLatestByStudentIdAsync(id, selectedTrack, selectedProfile);
+
                 if (rlRecommendation == null) return NotFound(new { error = "no_recommendation_found" });
+
+                var courses = rlRecommendation.Courses;
+                var slates = rlRecommendation.SlatesByTerm;
+                var metrics = rlRecommendation.Metrics;
+                var profiles = rlRecommendation.Profiles;
+
+                if (rlRecommendation.Tracks != null && rlRecommendation.Tracks.TryGetValue(selectedTrack, out var trackRecommendation))
+                {
+                    courses = trackRecommendation.Courses;
+                    slates = trackRecommendation.SlatesByTerm;
+                    metrics = trackRecommendation.Metrics;
+                    profiles = trackRecommendation.Profiles;
+
+                    if (trackRecommendation.Profiles != null && trackRecommendation.Profiles.TryGetValue(selectedProfile, out var profileRecommendation))
+                    {
+                        courses = profileRecommendation.Courses;
+                        slates = profileRecommendation.SlatesByTerm;
+                        metrics = profileRecommendation.Metrics;
+                    }
+                }
 
                 var mappingsCacheKey = "course-mappings:all";
                 var mappings = await _cache.GetAsync<List<CourseMapping>>(mappingsCacheKey);
@@ -135,7 +160,7 @@ namespace NUPAL.Core.API.Controllers
                     await _cache.SetAsync(mappingsCacheKey, mappings, TimeSpan.FromHours(24));
                 }
 
-                var displayCourses = rlRecommendation.Courses.Select(c =>
+                var displayCourses = courses.Select(c =>
                 {
                     var lower = c.Trim().ToLower();
                     var mapping = mappings.FirstOrDefault(m =>
@@ -155,13 +180,16 @@ namespace NUPAL.Core.API.Controllers
                 var result = new RlRecommendationResponseDto
                 {
                     Id = rlRecommendation.Id.ToString(),
-                    TermIndex = rlRecommendation.TermIndex,
+                    TermIndex = slates?.FirstOrDefault()?.Term ?? rlRecommendation.TermIndex,
                     Courses = displayCourses,
-                    Slates = rlRecommendation.SlatesByTerm,
-                    Metrics = rlRecommendation.Metrics,
+                    Slates = slates,
+                    Metrics = metrics,
                     CreatedAt = rlRecommendation.CreatedAt,
+                    TargetTrack = selectedTrack,
+                    ObjectiveProfile = selectedProfile,
                     DefaultProfile = rlRecommendation.DefaultProfile,
-                    Profiles = rlRecommendation.Profiles
+                    Profiles = profiles,
+                    Tracks = rlRecommendation.Tracks
                 };
 
                 await _cache.SetAsync(cacheKey, result, TimeSpan.FromHours(1));
@@ -174,22 +202,21 @@ namespace NUPAL.Core.API.Controllers
             }
         }
 
-        private static string? NormalizeTargetTrack(string? targetTrack)
+        private static string NormalizeTargetTrack(string? targetTrack)
         {
-            if (string.IsNullOrWhiteSpace(targetTrack)) return null;
-            var raw = targetTrack.Trim().ToLowerInvariant().Replace("-", "_").Replace(" ", "_");
+            var raw = (targetTrack ?? "general").Trim().ToLowerInvariant().Replace("-", "_").Replace(" ", "_");
             return raw switch
             {
                 "bigdata" or "big_data" or "big_data_track" => "big_data",
                 "media" or "media_informatics" or "media_track" => "media",
                 "general" or "general_track" => "general",
-                _ => raw
+                _ => "general"
             };
         }
 
-        private static string? NormalizeObjectiveProfile(string? profile)
+        private static string NormalizeObjectiveProfile(string? profile)
         {
-            if (string.IsNullOrWhiteSpace(profile)) return null;
+            if (string.IsNullOrWhiteSpace(profile)) return "balanced";
             return profile.Trim().ToLowerInvariant().Replace("-", "_").Replace(" ", "_");
         }
     }

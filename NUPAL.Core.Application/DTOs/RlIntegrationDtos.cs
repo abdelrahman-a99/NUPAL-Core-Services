@@ -86,6 +86,9 @@ namespace NUPAL.Core.Application.DTOs
     // Response from RL Service
     public class RlTrainingResponse
     {
+        [JsonIgnore]
+        public string? RawJson { get; set; }
+
         [JsonPropertyName("recommended_slates")]
         public List<List<string>> RecommendedSlates { get; set; }
 
