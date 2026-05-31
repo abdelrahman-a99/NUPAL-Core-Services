@@ -168,6 +168,91 @@ namespace NUPAL.Core.Application.Services
             return "balanced";
         }
 
+        private static AgentRlRecommendationDto BuildAgentRlSnapshot(
+            RlRecommendation rl,
+            string targetTrack,
+            string objectiveProfile)
+        {
+            var selectedTrack = NormalizeTargetTrackForChat(targetTrack);
+            var selectedProfile = NormalizeObjectiveProfileForChat(objectiveProfile);
+
+            var availableTracks = rl.Tracks?.Keys.ToList() ?? new List<string> { rl.TargetTrack };
+            var availableProfiles = new List<string>();
+
+            List<string> courses = rl.Courses ?? new List<string>();
+            List<TermRecommendation>? slates = rl.SlatesByTerm;
+            RecommendationMetrics? metrics = rl.Metrics;
+            string? rawResponseJson = null;
+
+            if (rl.Tracks != null && rl.Tracks.TryGetValue(selectedTrack, out var trackRecommendation))
+            {
+                courses = trackRecommendation.Courses ?? new List<string>();
+                slates = trackRecommendation.SlatesByTerm;
+                metrics = trackRecommendation.Metrics;
+                availableProfiles = trackRecommendation.Profiles?.Keys.ToList() ?? new List<string>();
+
+                if (trackRecommendation.Profiles != null &&
+                    trackRecommendation.Profiles.TryGetValue(selectedProfile, out var profileRecommendation))
+                {
+                    courses = profileRecommendation.Courses ?? new List<string>();
+                    slates = profileRecommendation.SlatesByTerm;
+                    metrics = profileRecommendation.Metrics;
+                }
+
+                if (rl.RawResponsesByTrack != null &&
+                    rl.RawResponsesByTrack.TryGetValue(selectedTrack, out var raw))
+                {
+                    rawResponseJson = raw;
+                }
+            }
+            else
+            {
+                availableProfiles = rl.Profiles?.Keys.ToList() ?? new List<string>();
+
+                if (rl.Profiles != null &&
+                    rl.Profiles.TryGetValue(selectedProfile, out var profileRecommendation))
+                {
+                    courses = profileRecommendation.Courses ?? new List<string>();
+                    slates = profileRecommendation.SlatesByTerm;
+                    metrics = profileRecommendation.Metrics;
+                }
+            }
+
+            return new AgentRlRecommendationDto
+            {
+                RecommendationId = rl.Id.ToString(),
+                TermIndex = slates?.FirstOrDefault()?.Term ?? rl.TermIndex,
+                Courses = courses,
+                TargetTrack = selectedTrack,
+                ObjectiveProfile = selectedProfile,
+                AvailableTracks = availableTracks,
+                AvailableProfiles = availableProfiles,
+                SlatesByTerm = slates,
+                Metrics = metrics,
+                RawResponseJson = rawResponseJson,
+                ModelVersion = rl.ModelVersion,
+                PolicyVersion = rl.PolicyVersion
+            };
+        }
+
+        private static string NormalizeTargetTrackForChat(string? targetTrack)
+        {
+            var raw = (targetTrack ?? "general").Trim().ToLowerInvariant().Replace("-", "_").Replace(" ", "_");
+            return raw switch
+            {
+                "bigdata" or "big_data" or "big_data_track" => "big_data",
+                "media" or "media_informatics" or "media_track" => "media",
+                "general" or "general_track" => "general",
+                _ => "general"
+            };
+        }
+
+        private static string NormalizeObjectiveProfileForChat(string? profile)
+        {
+            if (string.IsNullOrWhiteSpace(profile)) return "balanced";
+            return profile.Trim().ToLowerInvariant().Replace("-", "_").Replace(" ", "_");
+        }
+
         public async Task<ChatSendResponseDto> SendAsync(string studentId, ChatSendRequestDto request, CancellationToken ct = default)
         {
             if (string.IsNullOrWhiteSpace(studentId))
@@ -220,9 +305,10 @@ namespace NUPAL.Core.Application.Services
                 Content = request.Message.Trim()
             });
 
-            // 4) Fetch the best matching stored RL recommendation snapshot (if present).
-            // The agent also detects track/profile, but the backend must choose the stored variant
-            // before calling the agent. If no track is mentioned, default to General for backward compatibility.
+            // 4) Fetch the best matching stored RL recommendation snapshot.
+            // After track-aware bundling, one MongoDB recommendation may contain:
+            // tracks.general, tracks.big_data, tracks.media
+            // and each track may contain several objective profiles.
             AgentRlRecommendationDto? rlSnap = null;
             var requestedTargetTrack = DetectTargetTrack(request.Message);
             var requestedProfile = DetectObjectiveProfile(request.Message);
@@ -231,52 +317,35 @@ namespace NUPAL.Core.Application.Services
             var student = await _studentRepo.GetByIdAsync(studentId);
             if (student != null)
             {
-                RlRecommendation? rl = await _rlRepo.GetLatestByStudentIdAsync(studentId, lookupTargetTrack, requestedProfile);
+                RlRecommendation? rl = null;
 
-                if (rl == null && requestedProfile != "balanced")
-                {
-                    rl = await _rlRepo.GetLatestByStudentIdAsync(studentId, lookupTargetTrack, "balanced");
-                }
-
-                // Legacy fallback only when the user did not explicitly ask for a track.
-                if (rl == null && requestedTargetTrack == null && !string.IsNullOrWhiteSpace(student.LatestRecommendationId))
+                if (!string.IsNullOrWhiteSpace(student.LatestRecommendationId))
                 {
                     rl = await _rlRepo.GetByIdAsync(student.LatestRecommendationId);
-                    Console.WriteLine($"[ChatService] Found legacy RL via LatestRecommendationId: {student.LatestRecommendationId}");
+                    Console.WriteLine($"[ChatService] Found RL via LatestRecommendationId: {student.LatestRecommendationId}");
                 }
 
-                rl ??= requestedTargetTrack == null
-                    ? await _rlRepo.GetLatestByStudentIdAsync(studentId)
-                    : null;
+                rl ??= await _rlRepo.GetLatestByStudentIdAsync(studentId, "general", "balanced");
+                rl ??= await _rlRepo.GetLatestByStudentIdAsync(studentId);
 
                 if (rl != null)
                 {
-                    rlSnap = new AgentRlRecommendationDto
-                    {
-                        TermIndex = rl.TermIndex,
-                        Courses = rl.Courses ?? new List<string>(),
-                        TargetTrack = rl.TargetTrack,
-                        ObjectiveProfile = rl.ObjectiveProfile,
-                        SlatesByTerm = rl.SlatesByTerm,
-                        Metrics = rl.Metrics,
-                        ModelVersion = rl.ModelVersion,
-                        PolicyVersion = rl.PolicyVersion
-                    };
-                    Console.WriteLine($"[ChatService] Sending RL recommendation to agent: Track={rl.TargetTrack}, Profile={rl.ObjectiveProfile}, TermIndex={rl.TermIndex}, Courses={rl.Courses?.Count ?? 0}");
+                    rlSnap = BuildAgentRlSnapshot(rl, lookupTargetTrack, requestedProfile);
+
+                    Console.WriteLine(
+                        $"[ChatService] Sending RL recommendation to agent: " +
+                        $"Track={rlSnap.TargetTrack}, Profile={rlSnap.ObjectiveProfile}, " +
+                        $"TermIndex={rlSnap.TermIndex}, Courses={rlSnap.Courses?.Count ?? 0}");
                 }
                 else
                 {
-                    // Send an explicit empty snapshot for requested variants so the agent can respond
-                    // gracefully instead of hallucinating a track-specific plan.
-                    if (requestedTargetTrack != null)
+                    rlSnap = new AgentRlRecommendationDto
                     {
-                        rlSnap = new AgentRlRecommendationDto
-                        {
-                            TargetTrack = lookupTargetTrack,
-                            ObjectiveProfile = requestedProfile,
-                            Courses = new List<string>()
-                        };
-                    }
+                        TargetTrack = lookupTargetTrack,
+                        ObjectiveProfile = requestedProfile,
+                        Courses = new List<string>()
+                    };
+
                     Console.WriteLine($"[ChatService] No RL recommendation found for student={studentId}, track={lookupTargetTrack}, profile={requestedProfile}");
                 }
             }

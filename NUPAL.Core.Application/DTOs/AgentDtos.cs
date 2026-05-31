@@ -33,6 +33,9 @@ namespace NUPAL.Core.Application.DTOs
 
     public class AgentRlRecommendationDto
     {
+        [JsonPropertyName("recommendation_id")]
+        public string? RecommendationId { get; set; }
+
         [JsonPropertyName("term_index")]
         public int? TermIndex { get; set; }
 
@@ -45,11 +48,20 @@ namespace NUPAL.Core.Application.DTOs
         [JsonPropertyName("objective_profile")]
         public string? ObjectiveProfile { get; set; }
 
+        [JsonPropertyName("available_tracks")]
+        public List<string> AvailableTracks { get; set; } = new();
+
+        [JsonPropertyName("available_profiles")]
+        public List<string> AvailableProfiles { get; set; } = new();
+
         [JsonPropertyName("slates_by_term")]
         public List<TermRecommendation>? SlatesByTerm { get; set; }
 
         [JsonPropertyName("metrics")]
         public RecommendationMetrics? Metrics { get; set; }
+
+        [JsonPropertyName("raw_response_json")]
+        public string? RawResponseJson { get; set; }
 
         [JsonPropertyName("model_version")]
         public string? ModelVersion { get; set; }
